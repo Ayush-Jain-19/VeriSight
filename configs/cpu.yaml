@@ -1,0 +1,15 @@
+# CPU-specific configuration overrides for local testing & development
+
+device: "cpu"
+
+preprocessing:
+  video:
+    max_frames: 8
+
+training:
+  batch_size: 4
+  num_workers: 0 # Windows safe default for CPU dataloader
+  epochs: 2
+
+inference:
+  batch_size: 1

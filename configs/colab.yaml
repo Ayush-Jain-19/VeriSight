@@ -1,0 +1,14 @@
+# Colab GPU configuration overrides
+
+device: "cuda"
+
+training:
+  batch_size: 32
+  num_workers: 2
+  epochs: 20
+  learning_rate: 0.0001
+  early_stopping_patience: 5
+
+preprocessing:
+  video:
+    max_frames: 16

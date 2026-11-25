@@ -1,0 +1,57 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Project data & models (CRITICAL: Do not commit datasets or checkpoints)
+data/*
+!data/README.md
+!data/.gitkeep
+
+checkpoints/*
+!checkpoints/README.md
+!checkpoints/.gitkeep
+
+# Logs and outputs
+*.log
+logs/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node & Frontend
+node_modules/
+frontend/dist/
+frontend/node_modules/
+frontend/.env.local

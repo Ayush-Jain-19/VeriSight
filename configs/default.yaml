@@ -1,0 +1,103 @@
+# Master Configuration for Multimodal Deepfake Detection
+
+project_name: "multimodal-deepfake-detection"
+seed: 42
+device: "cpu" # Overridden in colab.yaml to "cuda"
+
+paths:
+  data_root: "./data/FakeAVCeleb"
+  manifest_path: "./data/manifest.csv"
+  train_split: "./data/train.csv"
+  val_split: "./data/val.csv"
+  test_split: "./data/test.csv"
+  checkpoints_dir: "./checkpoints"
+  logs_dir: "./logs"
+  preprocessed_cache_dir: "./data/cache"
+
+dataset:
+  # Folder regex patterns mapping to metadata groups
+  category_regex: "(RealVideo-RealAudio|RealVideo-FakeAudio|FakeVideo-RealAudio|FakeVideo-FakeAudio)"
+  category_mapping:
+    "RealVideo-RealAudio":
+      abbreviation: "RARV"
+      video_label: "REAL"
+      audio_label: "REAL"
+      overall_label: "REAL"
+    "RealVideo-FakeAudio":
+      abbreviation: "FARV"
+      video_label: "REAL"
+      audio_label: "FAKE"
+      overall_label: "FAKE"
+    "FakeVideo-RealAudio":
+      abbreviation: "RAFV"
+      video_label: "FAKE"
+      audio_label: "REAL"
+      overall_label: "FAKE"
+    "FakeVideo-FakeAudio":
+      abbreviation: "FAFV"
+      video_label: "FAKE"
+      audio_label: "FAKE"
+      overall_label: "FAKE"
+
+splits:
+  train_ratio: 0.70
+  val_ratio: 0.15
+  test_ratio: 0.15
+  group_column: "identity_id"
+  stratify_columns: ["ethnicity", "gender"]
+  min_samples_per_stratum_warning: 3
+
+preprocessing:
+  video:
+    sample_rate_fps: 1.0
+    max_frames: 8 # Configurable default for local CPU inference
+    hard_max_frames: 16
+    face_image_size: 224
+    min_face_size: 40
+    face_margin: 20
+  audio:
+    sample_rate: 16000
+    max_duration_seconds: 4.0
+    min_duration_seconds: 0.5
+
+models:
+  video:
+    backbone: "efficientnet_b0"
+    pretrained: true
+    freeze_backbone: true
+    embedding_dim: 128
+    dropout: 0.3
+  audio:
+    backbone: "facebook/wav2vec2-base"
+    freeze_backbone: true
+    embedding_dim: 128
+    dropout: 0.3
+  fusion:
+    input_dim: 258 # 1 (v_score) + 1 (a_score) + 128 (v_emb) + 128 (a_emb)
+    hidden_dims: [256, 64]
+    dropout: 0.3
+
+training:
+  batch_size: 8
+  num_workers: 2
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  epochs: 20
+  early_stopping_patience: 5
+  oof_folds: 5 # For out-of-fold feature extraction for fusion training
+
+calibration:
+  target_metric: "coverage"
+  target_value: 0.90 # Target 90% coverage on validation set
+  threshold_step: 0.01
+
+inference:
+  tau_fusion: 0.65
+  tau_video: 0.70
+  tau_audio: 0.68
+  low_face_count_threshold: 3
+
+api:
+  host: "127.0.0.1"
+  port: 8000
+  cors_origins: ["http://localhost:5173", "http://127.0.0.1:5173"]
