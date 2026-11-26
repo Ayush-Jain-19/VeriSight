@@ -25,11 +25,18 @@ def extract_frames(
     video_path: str | Path,
     max_frames: int = 8,
     sample_rate_fps: Optional[float] = None,
+    max_side: Optional[int] = None,
 ) -> List[Image.Image]:
     """Uniformly sample up to max_frames frames from a video file using OpenCV.
 
     Returns a list of PIL Images in RGB format.
     """
+    def as_rgb(frame):
+        if max_side and max(frame.shape[:2]) > max_side:
+            scale = max_side / max(frame.shape[:2])
+            frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
     path_str = str(Path(video_path).resolve())
     cap = cv2.VideoCapture(path_str)
     if not cap.isOpened():
@@ -46,8 +53,7 @@ def extract_frames(
             ret, frame = cap.read()
             if not ret:
                 break
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(Image.fromarray(frame_rgb))
+            frames.append(as_rgb(frame))
         cap.release()
         return frames
 
@@ -62,8 +68,7 @@ def extract_frames(
         cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
         ret, frame = cap.read()
         if ret and frame is not None:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            sampled_images.append(Image.fromarray(frame_rgb))
+            sampled_images.append(as_rgb(frame))
 
     cap.release()
     return sampled_images

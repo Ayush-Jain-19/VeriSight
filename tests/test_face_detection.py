@@ -13,7 +13,10 @@ try:
 except ImportError:
     HAS_FACENET = False
 
-FIXTURE_PATH = Path("tests/fixtures/real_face_test.jpg")
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURE_PATH = ROOT / "tests/fixtures/real_face_test.jpg"
+if not FIXTURE_PATH.is_file():
+    FIXTURE_PATH = ROOT / "demo_samples/test_face_real.jpg"
 
 
 @pytest.mark.skipif(not HAS_FACENET, reason="facenet-pytorch is not installed")

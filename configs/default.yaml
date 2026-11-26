@@ -92,6 +92,15 @@ calibration:
   threshold_step: 0.01
 
 inference:
+  audio_model: pranjal-pravesh/wav2vec2-large-xlsr-deepfake-audio-classification
+  text_model: fakespot-ai/roberta-base-ai-text-detection-v1
+  asr_enabled: false
+  strategy: disagreement_max
+  window_seconds: 5
+  text_band: [0.35, 0.65]
+  audio_band: [0.45, 0.55]
+  video_band: [0.45, 0.55]
+  fusion_band: [0.40, 0.60]
   tau_fusion: 0.65
   tau_video: 0.70
   tau_audio: 0.68

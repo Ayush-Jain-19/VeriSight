@@ -249,7 +249,7 @@ export const SourceMonitor: React.FC<SourceMonitorProps> = ({
               className="monitor-textarea"
               value={textContent}
               onChange={(e) => onTextChange(e.target.value)}
-              placeholder="Paste or compose article text, transcription, or statement to evaluate for synthetic generation patterns using Hello-SimpleAI/chatgpt-detector-roberta..."
+              placeholder="Paste or compose article text, transcription, or statement to evaluate for synthetic generation patterns using fakespot-ai/roberta-base-ai-text-detection-v1..."
               aria-label="Text to inspect"
             />
           </div>
@@ -384,11 +384,11 @@ export const SourceMonitor: React.FC<SourceMonitorProps> = ({
         </div>
       )}
 
-      {/* Video with Text overlay input row */}
-      {modality === 'video' && (
+      {/* Optional reference captions */}
+      {(modality === 'video' || modality === 'audio') && (
         <div className="monitor-text-overlay-input">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-            <label htmlFor="overlay-text">Subtitles / On-Screen Text (Optional):</label>
+            <label htmlFor="overlay-text">Reference caption (optional)</label>
             {textContent.length > 0 && (
               <button
                 type="button"
@@ -407,12 +407,21 @@ export const SourceMonitor: React.FC<SourceMonitorProps> = ({
               </button>
             )}
           </div>
+          <input type="file" accept=".txt,.srt,.vtt" aria-label="Load reference caption file"
+            onChange={async event => {
+              const caption = event.target.files?.[0];
+              if (!caption) return;
+              if (caption.size > 200000) { onFileError('Caption exceeds the text limit.'); return; }
+              const value = await caption.text();
+              if (value.length > 50000) { onFileError('Caption exceeds 50,000 characters.'); return; }
+              onTextChange(value);
+            }} />
           <input
             id="overlay-text"
             type="text"
             value={textContent}
             onChange={(e) => onTextChange(e.target.value)}
-            placeholder="Optional subtitles (subtitles do not alter face/voice manipulation verdicts)..."
+            placeholder="Paste the spoken words for the first 30 seconds"
           />
         </div>
       )}

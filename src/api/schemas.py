@@ -15,7 +15,19 @@ class ModelReadiness(BaseModel):
     error: Optional[str] = Field(None, description="Error message if checkpoint loading failed")
 
 
+class SentenceEvidence(BaseModel):
+    start: int
+    end: int
+    text: str
+    score: float
+
+
+class ScoreSpan(SentenceEvidence):
+    new_tokens: int
+
+
 class VideoEvidence(BaseModel):
+    band: Optional[tuple[float, float]] = None
     score: Optional[float] = Field(None, description="Video fake probability in [0, 1]")
     frames_analyzed: int = Field(0, description="Total video frames sampled")
     faces_detected: int = Field(0, description="Number of frames with detected face crops")
@@ -27,17 +39,22 @@ class VideoEvidence(BaseModel):
 
 
 class AudioEvidence(BaseModel):
+    band: Optional[tuple[float, float]] = None
+    usable_seconds: float = 0
+    windows: int = 0
     score: Optional[float] = Field(None, description="Audio fake probability in [0, 1]")
     duration_seconds: float = Field(0.0, description="Extracted audio duration in seconds")
     available: bool = Field(True, description="Whether audio modality was successfully processed")
-    model: str = Field("MelodyMachine/Deepfake-audio-detection", description="Audio backbone architecture")
+    model: str = Field(..., description="Configured acoustic checkpoint")
     checkpoint_loaded: bool = Field(True, description="Whether trained weights checkpoint was loaded")
     is_mock: bool = Field(False, description="Whether audio model uses mock backbone or untrained weights")
     reason: Optional[str] = Field(None, description="Diagnostic reason when score is omitted")
 
 
 class FusionEvidence(BaseModel):
-    score: Optional[float] = Field(None, description="Multimodal fused fake probability in [0, 1]")
+    ranking_score: Optional[float] = None
+    band: Optional[tuple[float, float]] = None
+    score: Optional[float] = Field(None, description="Uncalibrated decision index in [0, 1]")
     method: str = Field("separate_modality_assessment", description="Fusion methodology")
     threshold_used: Optional[float] = Field(None, description="Calibrated abstention threshold tau")
     threshold_name: Optional[str] = Field(None, description="Name of threshold applied")
@@ -57,23 +74,32 @@ class ImageEvidence(BaseModel):
 
 
 class TextEvidence(BaseModel):
+    band: Optional[tuple[float, float]] = None
+    sentences: List[SentenceEvidence] = Field(default_factory=list)
+    spans: List[ScoreSpan] = Field(default_factory=list)
     score: Optional[float] = Field(None, description="Synthetic text probability in [0, 1]")
     word_count: int = Field(0, description="Word count of analyzed text")
     burstiness_score: Optional[float] = Field(None, description="Sentence length variance metric")
     perplexity_score: Optional[float] = Field(None, description="Perplexity / entropy metric")
     lexical_diversity: Optional[float] = Field(None, description="Type-token ratio")
     available: bool = Field(True, description="Whether text analysis succeeded")
-    model: str = Field("Hello-SimpleAI/chatgpt-detector-roberta", description="Text analysis model")
+    model: str = Field("fakespot-ai/roberta-base-ai-text-detection-v1", description="Text analysis model")
     label: Optional[str] = Field("Experimental AI-writing style estimate", description="Descriptive result label")
     reason: Optional[str] = Field(None, description="Diagnostic reason when score is omitted")
 
 
 class CrossModalTextEvidence(BaseModel):
+    transcript: Optional[str] = None
+    language: Optional[str] = None
+    wer: Optional[float] = None
+    cer: Optional[float] = None
+    mismatch: Optional[float] = None
+    similarity_method: Optional[str] = None
     cross_modal_consistency: Optional[float] = Field(None, description="Consistency score between visual/audio and text")
     extracted_text_detected: bool = Field(False, description="Whether on-screen text was identified")
     ocr_word_count: int = Field(0, description="Number of detected on-screen words")
     transcript_status: Optional[str] = Field("Transcript comparison unavailable", description="Status of transcript comparison")
-    reason: Optional[str] = Field("Transcript comparison unavailable", description="Diagnostic explanation")
+    reason: Optional[str] = Field(None, description="Diagnostic explanation")
 
 
 class TimingEvidence(BaseModel):
@@ -88,7 +114,7 @@ class TimingEvidence(BaseModel):
 
 class PredictResponse(BaseModel):
     prediction: str = Field(..., description="Verdict: REAL, FAKE, or UNCERTAIN")
-    confidence: float = Field(..., description="Top-class confidence score in [0.5, 1.0]")
+    confidence: Optional[float] = Field(None, description="Top-class confidence score in [0.5, 1.0]")
     prediction_path: str = Field(..., description="Inference path taken: fusion, video_only, audio_only, image_only, text_only, video_text_fusion, or no_modalities")
     is_mock: bool = Field(False, description="Whether inference results are from mock or untrained models")
     models_ready: bool = Field(True, description="Whether all models have trained checkpoints loaded")

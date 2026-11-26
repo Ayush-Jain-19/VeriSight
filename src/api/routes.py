@@ -7,7 +7,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from src.api.schemas import HealthResponse, PredictResponse, TextPredictRequest
@@ -24,6 +24,22 @@ MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB max for local upload
 MAX_TEXT_LENGTH_CHARS = 50_000  # 50,000 characters limit for text payload
 
 
+async def reference_caption(text, subtitles):
+    if subtitles is not None:
+        if text and text.strip():
+            raise HTTPException(400, "Supply one reference caption")
+        raw = await subtitles.read(4 * MAX_TEXT_LENGTH_CHARS + 1)
+        if len(raw) > 4 * MAX_TEXT_LENGTH_CHARS:
+            raise HTTPException(413, "Subtitle file exceeds size limit")
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(400, "Subtitles must use UTF-8") from exc
+    if text and len(text) > MAX_TEXT_LENGTH_CHARS:
+        raise HTTPException(400, "Caption exceeds maximum allowed length")
+    return text
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health_check(request: Request):
     """Health status and dependency diagnostic check."""
@@ -37,7 +53,7 @@ async def health_check(request: Request):
         version="0.1.0",
         device=config.device if config else "cpu",
         ffmpeg_available=is_ffmpeg_available(),
-        models_loaded=pipeline is not None,
+        models_loaded=bool(readiness and readiness["models_loaded"]),
         models_ready=readiness["models_ready"] if readiness else False,
         thresholds_calibrated=readiness["thresholds_calibrated"] if readiness else False,
         video_model=readiness["video_model"] if readiness else None,
@@ -51,18 +67,14 @@ async def predict_video(
     request: Request,
     file: UploadFile = File(...),
     text: Optional[str] = Form(None),
+    subtitles: Optional[UploadFile] = File(None),
     strict: bool = False,
+    strategy: Optional[Literal["disagreement_max","confidence_weighted_fusion"]] = None,
 ):
     """Analyze an uploaded video file (with optional on-screen text) and produce multimodal prediction and evidence."""
     pipeline = getattr(request.app.state, "pipeline", None)
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Inference pipeline is not initialized.")
-
-    if strict and (hasattr(pipeline, "models_ready") and not pipeline.models_ready):
-        raise HTTPException(
-            status_code=503,
-            detail="Trained checkpoints are not loaded. Server is operating in demo/mock mode and strict validation rejected unvalidated inference.",
-        )
 
     # Validate file extension
     suffix = Path(file.filename or "").suffix.lower()
@@ -92,11 +104,14 @@ async def predict_video(
             raise HTTPException(status_code=400, detail="Uploaded video file is empty (0 bytes).")
 
         # Run inference: if text is provided, run cross-modal video-text inference
+        text = await reference_caption(text, subtitles)
         if text and text.strip():
-            result = pipeline.predict_video_text(temp_path, text_content=text)
+            result = pipeline.predict_video_text(temp_path, text_content=text, strategy=strategy)
         else:
-            result = pipeline.predict(temp_path)
+            result = pipeline.predict(temp_path, strategy=strategy)
 
+        if strict and not result["models_ready"]:
+            raise HTTPException(503, "Required video or audio evidence unavailable")
         return PredictResponse(**result)
 
     except HTTPException:
@@ -105,6 +120,7 @@ async def predict_video(
         logger.exception("Inference failed with unexpected error.")
         raise HTTPException(status_code=500, detail=f"Inference error: {str(e)}")
     finally:
+        temp_file.close()
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
 
@@ -113,6 +129,9 @@ async def predict_video(
 async def predict_audio(
     request: Request,
     file: UploadFile = File(...),
+    text: Optional[str] = Form(None),
+    subtitles: Optional[UploadFile] = File(None),
+    strategy: Optional[Literal["disagreement_max","confidence_weighted_fusion"]] = None,
 ):
     """Analyze a standalone audio file for acoustic deepfake signals."""
     pipeline = getattr(request.app.state, "pipeline", None)
@@ -144,7 +163,8 @@ async def predict_audio(
         if size == 0:
             raise HTTPException(status_code=400, detail="Uploaded audio file is empty (0 bytes).")
 
-        result = pipeline.predict_audio(temp_path)
+        text = await reference_caption(text, subtitles)
+        result = pipeline.predict_audio(temp_path, text, strategy)
         return PredictResponse(**result)
     except HTTPException:
         raise
@@ -152,6 +172,7 @@ async def predict_audio(
         logger.exception("Audio inference failed.")
         raise HTTPException(status_code=500, detail=f"Audio inference error: {str(e)}")
     finally:
+        temp_file.close()
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
 
@@ -192,12 +213,16 @@ async def predict_image(
         if size == 0:
             raise HTTPException(status_code=400, detail="Uploaded image file is empty (0 bytes).")
 
+        if check_type not in {None, "face_swap", "sdxl", "general_ai"}:
+            raise HTTPException(400, "Unknown image check")
         result = pipeline.predict_image(temp_path, check_type=check_type or "face_swap")
         return PredictResponse(**result)
     except HTTPException:
         raise
     except ValueError as e:
         logger.warning("Unprocessable image uploaded: %s", e)
+        if "megapixels" in str(e):
+            raise HTTPException(413, str(e)) from e
         raise HTTPException(
             status_code=400,
             detail="The uploaded file could not be decoded as a valid image. It may be corrupt or an unrecognized format.",
@@ -206,6 +231,7 @@ async def predict_image(
         logger.exception("Image inference failed.")
         raise HTTPException(status_code=500, detail=f"Image inference error: {str(e)}")
     finally:
+        temp_file.close()
         if temp_path.exists():
             temp_path.unlink(missing_ok=True)
 
@@ -268,7 +294,9 @@ async def predict_video_text(
     request: Request,
     file: UploadFile = File(...),
     text: Optional[str] = Form(None),
+    subtitles: Optional[UploadFile] = File(None),
+    strategy: Optional[Literal["disagreement_max","confidence_weighted_fusion"]] = None,
 ):
     """Analyze a video file containing on-screen text, burnt-in captions, or subtitles."""
     # Delegate to predict_video which natively accepts video + optional subtitles/text
-    return await predict_video(request=request, file=file, text=text, strict=False)
+    return await predict_video(request=request, file=file, text=text, subtitles=subtitles, strict=False, strategy=strategy)

@@ -35,6 +35,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    if app.state.pipeline is not None:
+        app.state.pipeline.slot.clear()
     logger.info("Shutting down deepfake detection backend...")
 
 

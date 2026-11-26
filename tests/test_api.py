@@ -5,87 +5,58 @@ import pytest
 
 from src.api.main import create_app
 from src.inference.pipeline import InferencePipeline
-from src.models.audio_model import AudioDeepfakeDetector
-from src.models.fusion_model import FusionDeepfakeDetector
-from src.models.video_model import VideoDeepfakeDetector
+from src.inference import pipeline as serving
 
 
 @pytest.fixture
-def api_client(mock_face_detector):
-    """Create a FastAPI test client with lightweight mocked models attached to app state."""
+def api_client(monkeypatch):
     app = create_app()
+    pipe = InferencePipeline()
+    # Offline adapter tests, with real decoding and the production pipeline.
+    class Face:
+        def predict_video_frames(self, frames):
+            return dict(score=.1, has_face=True, faces_detected=len(frames),
+                        frames_analyzed=len(frames), reason=None, model=serving.FACE)
 
-    video_model = VideoDeepfakeDetector(backbone_name="efficientnet_b0", pretrained=False)
-    audio_model = AudioDeepfakeDetector(backbone_name="mock", use_mock_backbone=True)
-    fusion_model = FusionDeepfakeDetector(input_dim=258, hidden_dims=[32])
+        def predict_image(self, image):
+            return dict(score=0., has_face=True, reason=None)
 
-    pipeline = InferencePipeline(
-        config=app.state.config,
-        video_model=video_model,
-        audio_model=audio_model,
-        fusion_model=fusion_model,
-        face_detector=mock_face_detector,
-    )
-    app.state.pipeline = pipeline
-
+    monkeypatch.setattr(serving, "load_visual", lambda _: Face())
+    def offline_text(text, slot, name):
+        return dict(score=None, available=False, word_count=len(text.split()),
+                    model=name, reason="Offline text fixture", spans=[])
+    monkeypatch.setattr(serving,"analyze_text",offline_text)
+    app.state.pipeline = pipe
     with TestClient(app) as client:
         yield client
 
 
 def test_health_endpoint(api_client):
-    """Verify /api/health returns 200 and expected diagnostic and model readiness fields."""
-    response = api_client.get("/api/health")
-    assert response.status_code == 200
-    data = response.json()
+    data = api_client.get("/api/health").json()
     assert data["status"] == "ok"
-    assert "ffmpeg_available" in data
-    assert data["models_loaded"] is True
-    # Readiness verification for uncalibrated / mock models
-    assert data["models_ready"] is False
-    assert data["thresholds_calibrated"] is False
-    assert data["video_model"]["loaded"] is True
-    assert data["video_model"]["checkpoint_loaded"] is False
-    assert data["video_model"]["is_mock"] is True
-    assert data["audio_model"]["loaded"] is True
-    assert data["audio_model"]["is_mock"] is True
-    assert data["fusion_model"]["loaded"] is True
-    assert data["fusion_model"]["checkpoint_loaded"] is False
+    assert not data["models_loaded"]
+    assert not data["models_ready"]
+    assert not data["thresholds_calibrated"]
+    assert not data["video_model"]["checkpoint_loaded"]
 
 
 def test_predict_endpoint_valid_video(api_client, synthetic_video_mp4):
-    """Verify /api/predict accepts multipart video file and marks unvalidated mock predictions."""
-    with open(synthetic_video_mp4, "rb") as f:
-        response = api_client.post(
-            "/api/predict",
-            files={"file": ("test_clip.mp4", f, "video/mp4")},
-        )
-
+    with synthetic_video_mp4.open("rb") as f:
+        response = api_client.post("/api/predict", files={"file": ("clip.mp4", f)})
     assert response.status_code == 200
     data = response.json()
-    assert data["prediction"] in {"REAL", "FAKE", "UNCERTAIN"}
-    assert "video" in data
-    assert "audio" in data
-    assert "fusion" in data
-    assert "timing" in data
+    assert data["prediction"] == "UNCERTAIN"
+    assert data["confidence"] is None
+    assert data["video"]["score"] == .1
+    assert data["audio"]["score"] is None
+    assert data["fusion"]["score"] is None
     assert data["timing"]["total_pipeline_sec"] > 0
-    # Verification that mock predictions are never presented as real
-    assert data["is_mock"] is True
-    assert data["models_ready"] is False
-    assert any("[UNVALIDATED]" in w for w in data["warnings"])
-    assert data["video"]["checkpoint_loaded"] is False
-    assert data["video"]["is_mock"] is True
 
 
-def test_predict_endpoint_strict_mode_rejects_mock(api_client, synthetic_video_mp4):
-    """Verify /api/predict?strict=true rejects unvalidated mock models with 503."""
-    with open(synthetic_video_mp4, "rb") as f:
-        response = api_client.post(
-            "/api/predict?strict=true",
-            files={"file": ("test_clip.mp4", f, "video/mp4")},
-        )
-
+def test_predict_endpoint_strict_mode_rejects_missing_stream(api_client, synthetic_video_mp4):
+    with synthetic_video_mp4.open("rb") as f:
+        response = api_client.post("/api/predict?strict=true", files={"file": ("clip.mp4", f)})
     assert response.status_code == 503
-    assert "Trained checkpoints are not loaded" in response.json()["detail"]
 
 
 def test_predict_endpoint_invalid_extension(api_client, tmp_path):
@@ -136,7 +107,8 @@ def test_predict_audio_endpoint(api_client, tmp_path):
     assert response.status_code == 200
     data = response.json()
     assert data["prediction_path"] == "audio_only"
-    assert data["audio"]["available"] is True
+    assert data["audio"]["available"] is False
+    assert data["audio"]["score"] is None
 
 
 def test_predict_image_endpoint(api_client, tmp_path):
@@ -261,3 +233,13 @@ def test_predict_text_endpoint_form_and_raw_body(api_client):
     assert resp_raw.json()["prediction_path"] == "text_only"
 
 
+
+def test_subtitle_upload_and_strategy(api_client, synthetic_video_mp4):
+    with synthetic_video_mp4.open("rb") as f:
+        response=api_client.post("/api/predict/video-text?strategy=confidence_weighted_fusion",
+                  files={"file":("clip.mp4",f),"subtitles":("ref.srt",b"example subtitle")})
+    assert response.status_code==200
+    result=response.json()
+    assert result["fusion"]["method"]=="confidence_weighted_fusion"
+    assert result["cross_modal"]["extracted_text_detected"]
+    assert result["cross_modal"]["mismatch"] is None

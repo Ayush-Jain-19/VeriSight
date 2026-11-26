@@ -1,17 +1,10 @@
-"""Pretrained Deep Learning detectors for multimodal deepfake detection.
-
-Checkpoints:
-- Visual Face-Swap: Samson5827/deepfakeguard-v2 (ONNX export on CPU)
-- General AI-Image: Organika/sdxl-detector (Hugging Face Swin Transformer)
-- Acoustic Deepfake: MelodyMachine/Deepfake-audio-detection (Wav2Vec2 on CPU)
-- Text AI-Writing: Hello-SimpleAI/chatgpt-detector-roberta (RoBERTa sequence classification)
-"""
-
+"""CPU visual detectors for face manipulation and whole-image synthesis."""
 from __future__ import annotations
 
 import logging
-import os
-import re
+import json
+import math
+from .runtime import positive_index
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -160,6 +153,8 @@ class FaceSwapDetector:
             from huggingface_hub import hf_hub_download
             import onnxruntime as ort
 
+            labels = json.loads(Path(hf_hub_download(self.model_name, "labels_v2.json")).read_text())
+            self.fake_index = positive_index(labels["index_to_label"], {"fake"}, {"real"})
             model_path = hf_hub_download(
                 repo_id=self.model_name,
                 filename="deepfakeguard_v2.onnx",
@@ -189,7 +184,9 @@ class FaceSwapDetector:
         input_name = self.session.get_inputs()[0].name
         raw_out = self.session.run(None, {input_name: face_crop_nhwc})
         real_score = float(raw_out[0][0, 0])
-        fake_score = float(np.clip(1.0 - real_score, 0.0, 1.0))
+        if not math.isfinite(real_score) or not 0 <= real_score <= 1:
+            raise ValueError("Invalid face detector sigmoid output")
+        fake_score = real_score if self.fake_index == 1 else 1 - real_score
         return fake_score
 
     def predict_image(
@@ -253,6 +250,7 @@ class FaceSwapDetector:
             }
 
         frame_scores: List[float] = []
+        inference_errors = 0
         for frame in frames_rgb:
             bbox = self.cropper.detect_face_bbox(frame)
             if bbox is not None:
@@ -262,6 +260,7 @@ class FaceSwapDetector:
                     f_score = self.predict_crop(face_input)
                     frame_scores.append(f_score)
                 except Exception as e:
+                    inference_errors += 1
                     logger.warning("Frame face scoring error: %s", e)
 
         faces_count = len(frame_scores)
@@ -271,7 +270,7 @@ class FaceSwapDetector:
                 "frames_analyzed": len(frames_rgb),
                 "faces_detected": 0,
                 "has_face": False,
-                "reason": "No usable face",
+                "reason": "Face inference failed on detected crops" if inference_errors else "No usable face",
                 "model": self.model_name,
                 "frame_scores": [],
             }
@@ -308,7 +307,10 @@ class SDXLDetector:
         try:
             from transformers import AutoImageProcessor, AutoModelForImageClassification
             self.processor = AutoImageProcessor.from_pretrained(self.model_name)
-            self.model = AutoModelForImageClassification.from_pretrained(self.model_name)
+            self.model, loading = AutoModelForImageClassification.from_pretrained(
+                self.model_name, use_safetensors=True, output_loading_info=True)
+            if loading["missing_keys"] or loading["mismatched_keys"]:
+                raise ValueError("Image checkpoint did not supply all model weights")
             self.model.eval()
             self.model_loaded = True
             logger.info("Successfully loaded %s", self.model_name)
@@ -334,7 +336,10 @@ class SDXLDetector:
                 logits = self.model(**inputs).logits
                 probs = torch.softmax(logits, dim=-1)
                 # id2label: {0: 'artificial', 1: 'human'}
-                artificial_score = float(probs[0, 0].item())
+                index = positive_index(self.model.config.id2label, {"artificial"}, {"human"})
+                artificial_score = float(probs[0, index].item())
+                if not math.isfinite(artificial_score):
+                    raise ValueError("Nonfinite image model output")
 
             return {
                 "score": round(artificial_score, 4),
@@ -350,291 +355,3 @@ class SDXLDetector:
                 "reason": f"Inference failure: {str(e)}",
                 "model": self.model_name,
             }
-
-
-# ---------------------------------------------------------------------------
-# 4. Acoustic Deepfake Detector: MelodyMachine/Deepfake-audio-detection
-# ---------------------------------------------------------------------------
-
-class AudioDeepfakeDetectorHF:
-    """Audio deepfake classification using MelodyMachine/Deepfake-audio-detection.
-
-    Specification:
-    - 16 kHz mono waveform
-    - id2label: {0: 'fake', 1: 'real'}
-    - Windowing for long speech to bound CPU memory on 8 GB RAM
-    - Silence or insufficient speech (< 0.5s or low RMS) returns reason with null score
-    - Shared between standalone audio files and video soundtrack extraction
-    """
-
-    def __init__(self):
-        self.extractor = None
-        self.model = None
-        self.model_loaded = False
-        self.error: Optional[str] = None
-        self.model_name = "MelodyMachine/Deepfake-audio-detection"
-        self.target_sr = 16000
-
-    def load(self) -> bool:
-        if self.model_loaded and self.model is not None:
-            return True
-        try:
-            from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
-            self.extractor = AutoFeatureExtractor.from_pretrained(self.model_name)
-            self.model = AutoModelForAudioClassification.from_pretrained(self.model_name)
-            self.model.eval()
-            self.model_loaded = True
-            logger.info("Successfully loaded %s", self.model_name)
-            return True
-        except Exception as e:
-            self.error = str(e)
-            logger.error("Failed to load %s: %s", self.model_name, e)
-            return False
-
-    def predict_waveform(self, waveform: Union[torch.Tensor, np.ndarray]) -> Dict[str, Any]:
-        """Analyze mono 16 kHz waveform with short speech windowing and silence gating."""
-        if not self.model_loaded and not self.load():
-            return {
-                "score": None,
-                "duration_seconds": 0.0,
-                "available": False,
-                "reason": f"Model unavailable: {self.error}",
-                "model": self.model_name,
-            }
-
-        # Format to 1D float32 numpy array
-        if isinstance(waveform, torch.Tensor):
-            wav_np = waveform.squeeze().cpu().numpy().astype(np.float32)
-        else:
-            wav_np = np.asarray(waveform, dtype=np.float32).squeeze()
-
-        num_samples = len(wav_np)
-        duration_sec = float(num_samples / self.target_sr)
-
-        # 1. Gate: insufficient duration (< 0.5s)
-        if num_samples < int(self.target_sr * 0.5):
-            return {
-                "score": None,
-                "duration_seconds": round(duration_sec, 2),
-                "available": False,
-                "reason": "Insufficient speech: audio duration is shorter than 0.5 seconds",
-                "model": self.model_name,
-            }
-
-        # 2. Gate: silence or zero signal
-        rms = float(np.sqrt(np.mean(wav_np ** 2) + 1e-10))
-        max_abs = float(np.max(np.abs(wav_np)))
-        if rms < 0.002 or max_abs < 0.008:
-            return {
-                "score": None,
-                "duration_seconds": round(duration_sec, 2),
-                "available": False,
-                "reason": "Silence or insufficient speech detected",
-                "model": self.model_name,
-            }
-
-        # 3. Memory-bounded windowing (5-second slices = 80,000 samples @ 16 kHz)
-        window_size = 5 * self.target_sr
-        step_size = window_size
-        max_windows = 6  # Up to 30s max to protect CPU and memory
-        num_windows = min(max_windows, max(1, int(np.ceil(num_samples / step_size))))
-
-        window_scores: List[float] = []
-
-        try:
-            for i in range(num_windows):
-                start = i * step_size
-                end = min(num_samples, start + window_size)
-                chunk = wav_np[start:end]
-                if len(chunk) < int(self.target_sr * 0.5):
-                    continue
-
-                chunk_rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-10))
-                if chunk_rms < 0.002:
-                    continue  # Silent chunk
-
-                inputs = self.extractor(chunk, sampling_rate=self.target_sr, return_tensors="pt")
-                with torch.no_grad():
-                    logits = self.model(**inputs).logits
-                    probs = torch.softmax(logits, dim=-1)
-                    # id2label: {0: 'fake', 1: 'real'}
-                    fake_p = float(probs[0, 0].item())
-                    window_scores.append(fake_p)
-
-            if not window_scores:
-                return {
-                    "score": None,
-                    "duration_seconds": round(duration_sec, 2),
-                    "available": False,
-                    "reason": "Silence or insufficient speech detected across active windows",
-                    "model": self.model_name,
-                }
-
-            median_fake = float(np.median(window_scores))
-            return {
-                "score": round(median_fake, 4),
-                "duration_seconds": round(duration_sec, 2),
-                "available": True,
-                "reason": None,
-                "model": self.model_name,
-            }
-        except Exception as e:
-            logger.exception("MelodyMachine audio inference failed: %s", e)
-            return {
-                "score": None,
-                "duration_seconds": round(duration_sec, 2),
-                "available": False,
-                "reason": f"Acoustic inference failure: {str(e)}",
-                "model": self.model_name,
-            }
-
-
-# ---------------------------------------------------------------------------
-# 5. Text AI-Writing Style Estimator: Hello-SimpleAI/chatgpt-detector-roberta
-# ---------------------------------------------------------------------------
-
-class TextDeepfakeDetectorHF:
-    """Text AI-writing style estimator using Hello-SimpleAI/chatgpt-detector-roberta.
-
-    Specification:
-    - Tokenizer and id2label: {0: 'Human', 1: 'ChatGPT'}
-    - Labeled "Experimental AI-writing style estimate"
-    - For very short text (< 50 chars or < 10 words) or unsupported languages,
-      explains limitation and omits score (score: None).
-    """
-
-    def __init__(self):
-        self.tokenizer = None
-        self.model = None
-        self.model_loaded = False
-        self.error: Optional[str] = None
-        self.model_name = "Hello-SimpleAI/chatgpt-detector-roberta"
-        self.display_label = "Experimental AI-writing style estimate"
-
-    def load(self) -> bool:
-        if self.model_loaded and self.model is not None:
-            return True
-        try:
-            from transformers import AutoTokenizer, AutoModelForSequenceClassification
-
-            local_safetensors_dir = Path("checkpoints/chatgpt_detector_roberta")
-            source_path = str(local_safetensors_dir) if local_safetensors_dir.exists() else self.model_name
-
-            self.tokenizer = AutoTokenizer.from_pretrained(source_path)
-            self.model = AutoModelForSequenceClassification.from_pretrained(source_path)
-            self.model.eval()
-            self.model_loaded = True
-            logger.info("Successfully loaded %s from %s", self.model_name, source_path)
-            return True
-        except Exception as e:
-            self.error = str(e)
-            logger.error("Failed to load %s: %s", self.model_name, e)
-            return False
-
-    def predict_text(self, text: str) -> Dict[str, Any]:
-        """Evaluate text passage for synthetic or LLM-generated writing characteristics."""
-        cleaned = text.strip()
-        words = re.findall(r"\b[A-Za-z0-9'-]+\b", cleaned)
-        word_count = len(words)
-        char_count = len(cleaned)
-
-        # 1. Gate: text length (< 50 chars or < 10 words)
-        if char_count < 50 or word_count < 10:
-            return {
-                "score": None,
-                "word_count": word_count,
-                "available": False,
-                "reason": "Text passage is too short (< 50 characters or < 10 words) for reliable linguistic estimation.",
-                "label": self.display_label,
-                "model": self.model_name,
-            }
-
-        # 2. Gate: unsupported languages (non-English / non-Latin characters > 35%)
-        non_ascii_chars = sum(1 for c in cleaned if ord(c) > 127)
-        if (non_ascii_chars / max(1, char_count)) > 0.35:
-            return {
-                "score": None,
-                "word_count": word_count,
-                "available": False,
-                "reason": "Unsupported language: text detector is calibrated exclusively for English passages.",
-                "label": self.display_label,
-                "model": self.model_name,
-            }
-
-        # 3. Load model on demand
-        if not self.model_loaded and not self.load():
-            return {
-                "score": None,
-                "word_count": word_count,
-                "available": False,
-                "reason": f"Model unavailable: {self.error}",
-                "label": self.display_label,
-                "model": self.model_name,
-            }
-
-        try:
-            inputs = self.tokenizer(
-                cleaned,
-                return_tensors="pt",
-                truncation=True,
-                max_length=512,
-            )
-            with torch.no_grad():
-                logits = self.model(**inputs).logits
-                probs = torch.softmax(logits, dim=-1)
-                # id2label: {0: 'Human', 1: 'ChatGPT'}
-                chatgpt_prob = float(probs[0, 1].item())
-
-            return {
-                "score": round(chatgpt_prob, 4),
-                "word_count": word_count,
-                "available": True,
-                "reason": None,
-                "label": self.display_label,
-                "model": self.model_name,
-            }
-        except Exception as e:
-            logger.exception("Text detector inference failed: %s", e)
-            return {
-                "score": None,
-                "word_count": word_count,
-                "available": False,
-                "reason": f"Linguistic estimation failed: {str(e)}",
-                "label": self.display_label,
-                "model": self.model_name,
-            }
-
-
-# Singleton instances for process-level reuse
-_face_swap_detector: Optional[FaceSwapDetector] = None
-_sdxl_detector: Optional[SDXLDetector] = None
-_audio_detector: Optional[AudioDeepfakeDetectorHF] = None
-_text_detector: Optional[TextDeepfakeDetectorHF] = None
-
-
-def get_face_swap_detector() -> FaceSwapDetector:
-    global _face_swap_detector
-    if _face_swap_detector is None:
-        _face_swap_detector = FaceSwapDetector()
-    return _face_swap_detector
-
-
-def get_sdxl_detector() -> SDXLDetector:
-    global _sdxl_detector
-    if _sdxl_detector is None:
-        _sdxl_detector = SDXLDetector()
-    return _sdxl_detector
-
-
-def get_audio_detector() -> AudioDeepfakeDetectorHF:
-    global _audio_detector
-    if _audio_detector is None:
-        _audio_detector = AudioDeepfakeDetectorHF()
-    return _audio_detector
-
-
-def get_text_detector() -> TextDeepfakeDetectorHF:
-    global _text_detector
-    if _text_detector is None:
-        _text_detector = TextDeepfakeDetectorHF()
-    return _text_detector

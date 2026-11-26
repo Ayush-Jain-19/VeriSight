@@ -18,7 +18,7 @@ const PATH_LABELS: Record<string, string> = {
   audio_only: 'Acoustic Speech Stream Direct',
   image_only: 'Photographic & Facial Analysis',
   text_only: 'Linguistic AI-Writing Analysis',
-  video_text_fusion: 'Visual & Acoustic Evaluation (Subtitles Non-Voting)',
+  video_text_fusion: 'Audio, visual and caption assessment',
   no_modalities: 'No Usable Signals in Input',
 };
 
@@ -54,9 +54,9 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
 
     switch (res.prediction) {
       case 'REAL':
-        return modality === 'text' ? 'Human-authored writing style' : 'No manipulation detected';
+        return modality === 'text' ? 'Lower AI-writing style estimate' : 'No manipulation detected';
       case 'FAKE':
-        return modality === 'text' ? 'Synthetic / AI-generated style' : 'Manipulation detected';
+        return modality === 'text' ? 'Elevated AI-writing style estimate' : 'Evidence flagged';
       default:
         return 'Inconclusive';
     }
@@ -75,51 +75,18 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
   };
 
   const getAssessmentMeaning = (res: PredictResponse) => {
-    if (res.prediction === 'UNCERTAIN') {
-      if (modality === 'image' && res.image?.score === null) {
-        return res.image.reason || 'No usable human face detected in the image.';
-      }
-      if (modality === 'audio' && res.audio?.score === null) {
-        return res.audio.reason || 'Audio stream has insufficient speech or contains silence.';
-      }
-      if (modality === 'text' && res.text?.score === null) {
-        return res.text.reason || 'Text passage is too brief for statistical evaluation.';
-      }
-      if (modality === 'video') {
-        if (res.video?.score === null && res.audio?.score === null) {
-          return 'Sampled video frames contained no detectable human faces and soundtrack is silent/missing.';
-        }
-      }
-      return 'The model could not extract sufficient signal to reach a decision threshold.';
+    if (modality === 'text') {
+      return res.text?.reason || 'Experimental AI-writing style estimate. Authorship requires independent evidence.';
     }
-
-    switch (modality) {
-      case 'audio':
-        return res.prediction === 'REAL'
-          ? 'Vocal characteristics and spectral properties match authentic human speech.'
-          : 'Acoustic features display synthetic voice cloning or vocoder manipulation artifacts.';
-      case 'image':
-        return res.prediction === 'REAL'
-          ? 'Facial geometry and pixel distributions align with authentic photographic capture.'
-          : (imageCheckType === 'general_ai'
-              ? 'Pixel distributions, Swin attention tokens, and diffusion signatures indicate synthetic AI generation.'
-              : 'Facial boundaries, blending seams, or feature warps indicate face-swap manipulation.');
-      case 'text':
-        return res.prediction === 'REAL'
-          ? 'Linguistic style, entropy variance, and perplexity patterns match human authoring.'
-          : 'Sentence distributions and linguistic style correlate with ChatGPT / LLM text generation.';
-      case 'video':
-      default:
-        return res.prediction === 'REAL'
-          ? 'Both visual facial frames and speech audio exhibit authentic recording characteristics.'
-          : 'Manipulation detected across the evaluated video modalities.';
-    }
+    if (res.disagreement) return 'The overall decision includes the available stream findings below.';
+    const branch = modality === 'image' ? res.image : res.audio;
+    return branch?.reason || (res.prediction === 'FAKE'
+      ? 'The selected detector flagged this sample.' : 'The selected detector found a low manipulation score.');
   };
 
-  const getSignalBarFillClass = (score: number) => {
-    if (score >= 0.50) return 'signal-bar-fill--fake';
-    if (score < 0.50) return 'signal-bar-fill--real';
-    return 'signal-bar-fill--uncertain';
+  const getSignalBarFillClass = (score: number, band?: [number, number] | null) => {
+    if (band && score >= band[0] && score <= band[1]) return 'signal-bar-fill--uncertain';
+    return score >= 0.50 ? 'signal-bar-fill--fake' : 'signal-bar-fill--real';
   };
 
   const hasInput = modality === 'text' ? textContent.trim().length > 0 : file !== null;
@@ -246,7 +213,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
                 </span>
               </div>
               <div className="findings-index-row">
-                <span className="findings-index-label">Audio soundtrack (MelodyMachine)</span>
+                <span className="findings-index-label">Audio soundtrack</span>
                 <span className="findings-index-value">
                   {isLoading ? 'Extracting speech to 16 kHz…' : 'Pending'}
                 </span>
@@ -255,7 +222,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
           )}
           {modality === 'audio' && (
             <div className="findings-index-row">
-              <span className="findings-index-label">Acoustic classifier (MelodyMachine)</span>
+              <span className="findings-index-label">Acoustic classifier</span>
               <span className="findings-index-value">
                 {isLoading ? 'Windowing & evaluating speech…' : 'Pending'}
               </span>
@@ -332,7 +299,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
               </span>
               <span className="signal-row-value">
                 {video.score !== null ? (
-                  `${(video.score * 100).toFixed(1)}% manipulation prob.`
+                  `${(video.score * 100).toFixed(1)}% detector score`
                 ) : (
                   <span style={{ color: 'var(--ink-muted)' }}>{video.reason || 'No usable face'}</span>
                 )}
@@ -342,7 +309,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
               <>
                 <div className="signal-bar-track">
                   <div
-                    className={`signal-bar-fill ${getSignalBarFillClass(video.score)}`}
+                    className={`signal-bar-fill ${getSignalBarFillClass(video.score, video.band)}`}
                     style={{ width: `${Math.min(100, Math.max(0, video.score * 100))}%` }}
                   />
                 </div>
@@ -367,7 +334,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
               </span>
               <span className="signal-row-value">
                 {audio.score !== null ? (
-                  `${(audio.score * 100).toFixed(1)}% manipulation prob.`
+                  `${(audio.score * 100).toFixed(1)}% detector score`
                 ) : (
                   <span style={{ color: 'var(--ink-muted)' }}>{audio.reason || 'Silence or no speech'}</span>
                 )}
@@ -377,7 +344,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
               <>
                 <div className="signal-bar-track">
                   <div
-                    className={`signal-bar-fill ${getSignalBarFillClass(audio.score)}`}
+                    className={`signal-bar-fill ${getSignalBarFillClass(audio.score, audio.band)}`}
                     style={{ width: `${Math.min(100, Math.max(0, audio.score * 100))}%` }}
                   />
                 </div>
@@ -402,7 +369,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
               </span>
               <span className="signal-row-value">
                 {audio.score !== null ? (
-                  `${(audio.score * 100).toFixed(1)}% manipulation prob.`
+                  `${(audio.score * 100).toFixed(1)}% detector score`
                 ) : (
                   <span style={{ color: 'var(--ink-muted)' }}>{audio.reason || 'Silence or insufficient speech'}</span>
                 )}
@@ -411,7 +378,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
             {audio.score !== null ? (
               <div className="signal-bar-track">
                 <div
-                  className={`signal-bar-fill ${getSignalBarFillClass(audio.score)}`}
+                  className={`signal-bar-fill ${getSignalBarFillClass(audio.score, audio.band)}`}
                   style={{ width: `${Math.min(100, Math.max(0, audio.score * 100))}%` }}
                 />
               </div>
@@ -432,7 +399,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
               </span>
               <span className="signal-row-value">
                 {image.score !== null ? (
-                  `${(image.score * 100).toFixed(1)}% synthetic / manipulation prob.`
+                  `${(image.score * 100).toFixed(1)}% detector score`
                 ) : (
                   <span style={{ color: 'var(--ink-muted)' }}>{image.reason || 'No usable face'}</span>
                 )}
@@ -471,7 +438,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
             {text.score !== null ? (
               <div className="signal-bar-track">
                 <div
-                  className={`signal-bar-fill ${getSignalBarFillClass(text.score)}`}
+                  className={`signal-bar-fill ${getSignalBarFillClass(text.score, text.band)}`}
                   style={{ width: `${Math.min(100, Math.max(0, text.score * 100))}%` }}
                 />
               </div>
@@ -483,20 +450,39 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
           </div>
         )}
 
-        {/* Video with Text overlay: Subtitles consistency notice */}
-        {modality === 'video' && cross_modal && (
-          <div className="signal-row">
-            <div className="signal-row-header">
-              <span className="signal-row-label">Subtitle-to-speech consistency</span>
-              <span className="signal-row-value" style={{ color: 'var(--ink-muted)' }}>
-                {cross_modal.transcript_status || 'Transcript comparison unavailable'}
-              </span>
-            </div>
-            <div style={{ fontSize: '11px', color: 'var(--ink-muted)', marginTop: '2px' }}>
-              Subtitles do not vote on face or speech manipulation verdicts.
-            </div>
-          </div>
+        {[['Visual', video?.band], ['Acoustic', audio?.band], ['Writing style', text?.band],
+          ['Fusion', result.fusion?.band]].map(([label, band]) => Array.isArray(band) && (
+            <p className="evidence-note" key={String(label)}>
+              {label} uncertainty band {band[0].toFixed(2)}–{band[1].toFixed(2)} (uncalibrated)
+            </p>
+          ))}
+        {cross_modal && (
+          <section className="signal-row">
+            <h3>Speech transcript</h3>
+            <p>{cross_modal.transcript || cross_modal.transcript_status}</p>
+            {cross_modal.reason && <p>{cross_modal.reason}</p>}
+            {cross_modal.wer != null && (
+              <p>Caption word error rate {cross_modal.wer.toFixed(3)} · Character error rate {cross_modal.cer?.toFixed(3)}
+                {' · '}{cross_modal.similarity_method} {cross_modal.cross_modal_consistency?.toFixed(3)}</p>
+            )}
+          </section>
         )}
+        {text && modality !== 'text' && <p>Transcript writing-style estimate {text.score?.toFixed(4) ?? text.reason}</p>}
+        {!!text?.sentences?.length && <details className="signal-row" open>
+          <summary>Sentence estimates ({text.sentences.length} sampled)</summary>
+          <p>Each sentence is scored independently. The passage estimate uses overlapping token windows.</p>
+          {text.sentences.map(sentence => <p key={sentence.start}>
+            <mark>{sentence.text}</mark> <strong>{sentence.score.toFixed(4)}</strong>
+          </p>)}
+        </details>}
+        {!!text?.spans?.length && <details className="signal-row">
+          <summary>Writing-style evidence by passage span ({text.spans.length})</summary>
+          {text.spans.map(span => <blockquote key={span.start}>
+            <strong>Characters {span.start + 1}–{span.end} · {span.score.toFixed(4)}</strong>
+            <p><mark>{span.text}</mark></p>
+          </blockquote>)}
+        </details>}
+        {result.fusion?.score != null && <p>Uncalibrated fusion score {result.fusion.score.toFixed(4)}</p>}
       </div>
 
       <hr className="findings-rule" />
@@ -529,7 +515,7 @@ export const FindingsSheet: React.FC<FindingsSheetProps> = ({
             <div className="tech-detail-row">
               <span className="tech-detail-label">Confidence</span>
               <span className="tech-detail-value">
-                {(result.confidence * 100).toFixed(1)}%
+                {result.confidence == null ? 'Unavailable' : (result.confidence * 100).toFixed(1) + '%'}
               </span>
             </div>
 

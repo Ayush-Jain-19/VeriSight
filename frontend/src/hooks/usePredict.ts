@@ -42,6 +42,7 @@ export const usePredict = () => {
 
         if (modality === 'audio') {
           endpoint = '/api/predict/audio';
+          if (textContent?.trim()) formData.append('text', textContent.trim());
         } else if (modality === 'image') {
           endpoint = '/api/predict/image';
           formData.append('check_type', imageCheckType || 'face_swap');

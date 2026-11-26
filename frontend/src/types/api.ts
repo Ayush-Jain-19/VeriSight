@@ -8,6 +8,7 @@ export interface ModelReadiness {
 }
 
 export interface VideoEvidence {
+  band?: [number, number] | null;
   score: number | null;
   frames_analyzed: number;
   faces_detected: number;
@@ -19,6 +20,7 @@ export interface VideoEvidence {
 }
 
 export interface AudioEvidence {
+  band?: [number, number] | null;
   score: number | null;
   duration_seconds: number;
   available: boolean;
@@ -29,6 +31,7 @@ export interface AudioEvidence {
 }
 
 export interface FusionEvidence {
+  band?: [number, number] | null;
   score: number | null;
   method: string;
   threshold_used: number | null;
@@ -49,6 +52,9 @@ export interface ImageEvidence {
 }
 
 export interface TextEvidence {
+  sentences?: {start: number; end: number; text: string; score: number}[];
+  spans?: {start: number; end: number; text: string; score: number; new_tokens: number}[];
+  band?: [number, number] | null;
   score: number | null;
   word_count: number;
   burstiness_score?: number | null;
@@ -61,6 +67,11 @@ export interface TextEvidence {
 }
 
 export interface CrossModalTextEvidence {
+  transcript?: string | null;
+  wer?: number | null;
+  cer?: number | null;
+  mismatch?: number | null;
+  similarity_method?: string | null;
   cross_modal_consistency?: number | null;
   extracted_text_detected: boolean;
   ocr_word_count: number;
@@ -80,7 +91,7 @@ export interface TimingEvidence {
 
 export interface PredictResponse {
   prediction: 'REAL' | 'FAKE' | 'UNCERTAIN';
-  confidence: number;
+  confidence: number | null;
   prediction_path: string;
   is_mock?: boolean;
   models_ready?: boolean;

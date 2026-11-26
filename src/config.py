@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CategoryMapping(BaseModel):
@@ -120,6 +120,23 @@ class CalibrationConfig(BaseModel):
 
 
 class InferenceConfig(BaseModel):
+    audio_model: str = "pranjal-pravesh/wav2vec2-large-xlsr-deepfake-audio-classification"
+    text_model: str = "fakespot-ai/roberta-base-ai-text-detection-v1"
+    asr_enabled: bool = False
+    strategy: Literal["disagreement_max", "confidence_weighted_fusion"] = "disagreement_max"
+    text_band: tuple[float, float] = (.35, .65)
+    audio_band: tuple[float, float] = (.45, .55)
+    video_band: tuple[float, float] = (.45, .55)
+    fusion_band: tuple[float, float] = (.40, .60)
+    window_seconds: Literal[4, 5] = 5
+
+    @field_validator("text_band", "audio_band", "video_band", "fusion_band")
+    @classmethod
+    def validate_band(cls, band):
+        if not 0 <= band[0] < .5 < band[1] <= 1:
+            raise ValueError("Each decision band must straddle 0.5 inside [0,1]")
+        return band
+
     tau_fusion: float = 0.65
     tau_video: float = 0.70
     tau_audio: float = 0.68

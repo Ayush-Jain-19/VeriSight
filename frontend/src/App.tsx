@@ -12,7 +12,7 @@ const HEADINGS: Record<ModalityType, { title: string; subtitle: string }> = {
   },
   audio: {
     title: 'Inspect acoustic recording',
-    subtitle: 'Examine speech characteristics and voice cloning with MelodyMachine/Deepfake-audio-detection.',
+    subtitle: 'Inspect speech for acoustic signs of synthesis.',
   },
   image: {
     title: 'Inspect photographic media',
@@ -20,7 +20,7 @@ const HEADINGS: Record<ModalityType, { title: string; subtitle: string }> = {
   },
   text: {
     title: 'Inspect textual content',
-    subtitle: 'Evaluate passages with Hello-SimpleAI/chatgpt-detector-roberta for synthetic writing style.',
+    subtitle: 'Evaluate passages with fakespot-ai/roberta-base-ai-text-detection-v1 for synthetic writing style.',
   },
 };
 
@@ -144,14 +144,14 @@ export const App: React.FC = () => {
           <div className="system-detail-item">
             <span className="system-detail-label">Acoustic Model:</span>
             <span className="system-detail-value">
-              MelodyMachine/Deepfake-audio-detection
+              {health?.audio_model?.model_name ?? "Awaiting backend"}
             </span>
           </div>
 
           <div className="system-detail-item">
             <span className="system-detail-label">Text Model:</span>
             <span className="system-detail-value">
-              Hello-SimpleAI/chatgpt-detector-roberta
+              fakespot-ai/roberta-base-ai-text-detection-v1
             </span>
           </div>
         </div>

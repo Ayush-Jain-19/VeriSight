@@ -1,21 +1,4 @@
-"""Comprehensive End-to-End API Verification Script for All Modalities.
-
-Tests:
-1. Face-Swap Real Image (Samson5827/deepfakeguard-v2)
-2. Face-Swap Manipulated Image (Samson5827/deepfakeguard-v2)
-3. No-Face Image (Samson5827/deepfakeguard-v2)
-4. General AI Real Image (Organika/sdxl-detector)
-5. General AI Synthetic Image (Organika/sdxl-detector)
-6. Authentic Speech Audio (MelodyMachine/Deepfake-audio-detection)
-7. Synthesized Speech Audio (MelodyMachine/Deepfake-audio-detection)
-8. Silent Audio (MelodyMachine/Deepfake-audio-detection)
-9. Authentic Video (Visual + Audio)
-10. Face-Swapped Video with Original Audio (Cross-Modal Disagreement)
-11. Silent Video (No Soundtrack)
-12. One-Line Short Text (Hello-SimpleAI/chatgpt-detector-roberta)
-13. Text English Passage (Hello-SimpleAI/chatgpt-detector-roberta)
-14. Video with Subtitles (Subtitle Non-Voting Verification)
-"""
+"""Live API contract checks on the thirteen bundled demonstration scenarios."""
 
 from pathlib import Path
 from fastapi.testclient import TestClient
@@ -138,11 +121,11 @@ def run_verification():
         results.append({
             "modality": "Audio",
             "input": "test_speech_synthesis.wav",
-            "expected": "Available = True, valid float score, model = MelodyMachine/Deepfake-audio-detection",
+            "expected": "Available = True, valid float score from the configured acoustic detector",
             "actual_prediction": data["prediction"],
             "actual_score": data["audio"]["score"],
             "actual_duration": data["audio"]["duration_seconds"],
-            "pass": data["audio"]["score"] is not None and "MelodyMachine" in data["audio"]["model"],
+            "pass": data["audio"]["score"] is not None and data["audio"]["model"] == app.state.pipeline.settings.audio_model,
         })
 
         # 8. Video: Real Face with Audio
@@ -178,7 +161,7 @@ def run_verification():
             "audio_score": data["audio"]["score"],
             "disagreement": data.get("disagreement"),
             "fusion_score": data["fusion"]["score"],
-            "pass": data["prediction"] == "FAKE" and data["video"]["score"] > 0.50 and "Visual branch flagged" in (data.get("disagreement") or "") and data["fusion"]["score"] is None,
+            "pass": data["prediction"] == "FAKE" and data["video"]["score"] > 0.50 and "visual FAKE" in (data.get("disagreement") or "") and data["fusion"]["score"] is None,
         })
 
         # 10. Video: Silent Video (No Soundtrack)
@@ -241,10 +224,10 @@ def run_verification():
         results.append({
             "modality": "Video with Subtitles",
             "input": "test_video_realface_with_audio.mp4 + Subtitles",
-            "expected": "Subtitles do not vote, transcript comparison unavailable",
+            "expected": "ASR disabled by default, caption comparison omitted",
             "prediction": data["prediction"],
             "transcript_status": data.get("cross_modal", {}).get("transcript_status"),
-            "pass": "Transcript comparison unavailable" in (data.get("cross_modal", {}).get("transcript_status") or ""),
+            "pass": data["prediction"] == results[7]["actual_prediction"] and data.get("cross_modal", {}).get("transcript_status") == "ASR disabled",
         })
 
         print(f"\nCompleted {len(results)} automated test cases:\n")
@@ -252,7 +235,7 @@ def run_verification():
             status = "PASS" if r["pass"] else "FAIL"
             print(f"[{status}] Test {i:02d}: {r['modality']} - {r['input']}")
             print(f"       Expected: {r['expected']}")
-            print(f"       Actual:   pred={r.get('actual_prediction') or r.get('prediction')}, score={r.get('actual_score') or r.get('video_score')}")
+            print(f"       Actual:   pred={r.get('actual_prediction') or r.get('prediction')}, score={r.get('actual_score', r.get('video_score'))}")
             if r.get("disagreement"):
                 print(f"       Disagreement: {r['disagreement']}")
             if r.get("actual_reason"):
@@ -263,5 +246,7 @@ def run_verification():
         print(f"FINAL RESULT: {'ALL PASS' if all_passed else 'SOME FAILURES'}")
         print("=" * 80)
 
+        return all_passed
+
 if __name__ == "__main__":
-    run_verification()
+    raise SystemExit(0 if run_verification() else 1)
